@@ -1,0 +1,60 @@
+import json
+import logging
+from datetime import datetime
+import boto3
+
+# Configure logging
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+# Initialize DynamoDB client
+dynamodb = boto3.client('dynamodb')
+RETRAIN_TABLE = 'IrisExtendedRetrain'
+CONFIDENCE_THRESHOLD = 0.9  
+
+def lambda_handler(event, context):
+    logger.info("Received event: " + json.dumps(event, indent=2))
+    
+    for record in event['Records']:
+        if record['eventName'] == 'INSERT':
+            try:
+                new_image = record['dynamodb']['NewImage']
+                
+                # Extract required fields
+                predicted_class = new_image['Class']['S']
+                actual_class = new_image['Actual']['S']
+                confidence = float(new_image['Probability']['S'])
+                
+                # Determine retrain reason
+                retrain_reason = None
+                if predicted_class != actual_class:
+                    retrain_reason = "incorrect_prediction"
+                elif confidence < CONFIDENCE_THRESHOLD:
+                    retrain_reason = "low_confidence"
+                
+                # Only process problematic records
+                if retrain_reason:
+                    logger.info(f"Flagging record for retraining: {retrain_reason}")
+                    
+                    # Create enriched retrain record
+                    retrain_record = {
+                        **new_image,
+                        'RetrainReason': {'S': retrain_reason},
+                        'ProcessedTimestamp': {'S': datetime.utcnow().isoformat()}
+                    }
+                    
+                    # Write to retrain table
+                    response = dynamodb.put_item(
+                        TableName=RETRAIN_TABLE,
+                        Item=retrain_record
+                    )
+                    logger.info(f"Successfully wrote to retrain table: {response}")
+                
+            except Exception as e:
+                logger.error(f"Error processing record: {str(e)}")
+                continue
+    
+    return {
+        'statusCode': 200,
+        'body': json.dumps('Processed DynamoDB stream')
+    }
